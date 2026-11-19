@@ -254,6 +254,10 @@
     return r.width === 0 && r.height === 0 && el.children.length === 0;
   }
 
+  function isFileInput(el) {
+    return el.tagName === "INPUT" && (el.getAttribute("type") || "").toLowerCase() === "file" && !el.disabled;
+  }
+
   function isInteractive(el, r, st) {
     if (INTERACTIVE_ROLES.has(r)) return true;
     if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
@@ -346,7 +350,10 @@
       if (SKIP_TAGS.has(el.tagName)) return;
       let st;
       try { st = css(el); } catch (_) { return; }
-      if (isHidden(el, st) || el.getAttribute("aria-hidden") === "true") return;
+      // File inputs are usually hidden behind a styled button but are still the
+      // target file_upload needs, so keep them in the tree.
+      const fileInput = isFileInput(el);
+      if (!fileInput && (isHidden(el, st) || el.getAttribute("aria-hidden") === "true")) return;
       const r = role(el);
       if (r === "none" && el.tagName !== "svg") { /* fallthrough to children */ }
       const inter = r !== "none" && isInteractive(el, r, st);
@@ -376,7 +383,9 @@
       if (xid !== null) lines.push(`${MARK}FRAME ${xid} ${interactiveOnly ? 0 : indent + (include ? 1 : 0)} ${depth - d - 1}`);
       // Leaf-ish controls: their text is already in the name.
       if (include && ["button", "link", "heading", "option", "textbox", "img"].includes(r) && !interactiveOnly) return;
-      for (const c of children(el)) walk(c, d + 1, include ? indent + 1 : indent);
+      // depth counts levels of the printed tree, not DOM levels: apps like
+      // Blackboard Ultra wrap content in dozens of bare <div>s.
+      for (const c of children(el)) walk(c, include ? d + 1 : d, include ? indent + 1 : indent);
     }
 
     walk(root, 0, 0);
@@ -399,7 +408,7 @@
     for (const el of all) {
       let st;
       try { st = css(el); } catch (_) { continue; }
-      if (isHidden(el, st)) continue;
+      if (isHidden(el, st) && !isFileInput(el)) continue;
       const r = role(el);
       if (r === "none") continue;
       const inter = isInteractive(el, r, st);

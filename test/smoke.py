@@ -259,6 +259,15 @@ for want in ('group "Shipping"', 'required', 'description="5 digits"', 'table "P
     assert want in tree, (want, tree)
 assert "Ghost" not in tree and "img" not in tree, tree
 
+# deep wrapper nesting (Blackboard Ultra style) and a hidden file input behind a styled button
+deep = "<div>" * 40 + '<h2>Deep</h2><input type=file id=hf style="display:none"><button>Upload</button>' + "</div>" * 40
+open(os.path.join(_d, "deep.html"), "w").write("<title>deep</title>" + deep)
+call("navigate", tabId=tab, url=f"http://127.0.0.1:{port}/deep.html")
+_, tree = call("read_page", tabId=tab)
+assert 'heading "Deep"' in tree and "type=file" in tree and 'button "Upload"' in tree, tree
+_, tree = call("read_page", tabId=tab, filter="interactive")
+assert "type=file" in tree, tree
+
 # a password manager's autofill dropdown (shaped like Proton Pass's) must not
 # take Claude's clicks: it opens on focus over the button below the field
 open(os.path.join(_d, "pm.html"), "w").write(

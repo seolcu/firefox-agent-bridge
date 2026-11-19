@@ -31,7 +31,7 @@ BIDI_START_WAIT_S = 5
 MARKER_IDLE_S = 120  # must match IDLE_MS in autoconfig/firefox-agent-bridge.cfg
 SHOT_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "firefox-agent-bridge", "screenshots")
 TIMEOUT_S = 90
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 
 # Native messaging caps host->extension messages at 1 MB, so file payloads go
 # over in chunks that the extension reassembles.
@@ -137,7 +137,7 @@ TOOLS = [
          {"tabId": TAB,
           "filter": {"type": "string", "enum": ["interactive", "all"],
                      "description": "'interactive' lists only controls; 'all' (default) everything rendered."},
-          "depth": {"type": "number", "description": "Maximum tree depth (default 15)."},
+          "depth": {"type": "number", "description": "Maximum depth of the printed tree (default 15); wrapper elements that are not printed do not count."},
           "ref_id": {"type": "string", "description": "Read only this element's subtree."},
           "max_chars": {"type": "number", "description": "Output limit (default 50000)."}},
          ["tabId"]),
@@ -431,7 +431,7 @@ class Server:
         claude = shutil.which("claude")
         if not query or os.environ.get("AGENT_BRIDGE_FIND") == "keyword" or not claude:
             return self.ext("find", args)
-        tree, err = self.ext("read_page", {"tabId": args.get("tabId"), "filter": "all", "max_chars": 80000})
+        tree, err = self.ext("read_page", {"tabId": args.get("tabId"), "filter": "all", "depth": 60, "max_chars": 80000})
         if err:
             return tree, True
         text = tree[0]["text"]
