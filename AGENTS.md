@@ -101,5 +101,10 @@ kill "$(cat <scratch>/ff.pid)"
    `host/mcp_server.py`. Firefox keeps the old system-scope copy otherwise.
 2. Update `README.md` when behaviour or tools change.
 3. Commit and push to `main`.
-4. `./install.sh`, then restart Firefox. When the tool list changed, start a
-   new Claude Code session too.
+4. Tag and publish a GitHub release for every version:
+   `git tag -a vX.Y.Z -m "Firefox Agent Bridge vX.Y.Z" && git push origin vX.Y.Z`, then
+   `gh release create vX.Y.Z --title vX.Y.Z --notes-file <notes.md>`. The notes
+   list user-visible changes since the previous release and link the README's
+   security warnings when anything touching them changed.
+5. `./install.sh`, then restart Firefox. When the tool list or the MCP server
+   changed, start a new Claude Code session too.
