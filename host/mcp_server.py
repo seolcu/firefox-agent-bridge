@@ -31,7 +31,7 @@ BIDI_START_WAIT_S = 5
 MARKER_IDLE_S = 120  # must match IDLE_MS in autoconfig/firefox-agent-bridge.cfg
 SHOT_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "firefox-agent-bridge", "screenshots")
 TIMEOUT_S = 90
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 
 # Native messaging caps host->extension messages at 1 MB, so file payloads go
 # over in chunks that the extension reassembles.

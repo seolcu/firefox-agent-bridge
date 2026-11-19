@@ -259,6 +259,28 @@ for want in ('group "Shipping"', 'required', 'description="5 digits"', 'table "P
     assert want in tree, (want, tree)
 assert "Ghost" not in tree and "img" not in tree, tree
 
+# a password manager's autofill dropdown (shaped like Proton Pass's) must not
+# take Claude's clicks: it opens on focus over the button below the field
+open(os.path.join(_d, "pm.html"), "w").write(
+    '<title>pm</title><input id=user style="position:absolute;left:20px;top:20px;width:200px">'
+    '<button id=under style="position:absolute;left:20px;top:60px;width:200px;height:40px" '
+    'onclick="this.textContent=\'page clicked\'">Under</button><p id=log style="position:absolute;top:200px"></p><script>'
+    'user.addEventListener("focus", () => { if (document.querySelector("protonpass-root-t1")) return;'
+    ' const r = document.createElement("protonpass-root-t1"); r.setAttribute("data-protonpass-role", "root");'
+    ' const s = r.attachShadow({mode: "open"});'
+    ' s.innerHTML = "<style>:host{display:block!important;visibility:visible!important;position:fixed!important;'
+    'left:0!important;top:50px!important;width:300px!important;height:100px!important;z-index:2147483647!important;'
+    'background:#6d4aff!important}</style><button style=\'width:100%;height:100%\'>Autofill</button>";'
+    ' s.querySelector("button").onclick = () => { log.textContent = "AUTOFILLED"; };'
+    ' setTimeout(() => document.body.appendChild(r), 50); });</script>')
+call("navigate", tabId=tab, url=f"http://127.0.0.1:{port}/pm.html")
+call("computer", tabId=tab, action="left_click", coordinate=[100, 30])
+time.sleep(0.5)
+_, out = call("computer", tabId=tab, action="left_click", coordinate=[100, 80])
+assert "Autofill" not in out, out
+_, pt = call("get_page_text", tabId=tab)
+assert "page clicked" in pt and "AUTOFILLED" not in pt, pt
+
 # console history survives same-domain navigation, resets on another domain
 call("navigate", tabId=tab, url=f"http://127.0.0.1:{port}/index.html")
 _, out = call("read_console_messages", tabId=tab, pattern="a11y page log|page warn")

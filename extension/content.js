@@ -1074,10 +1074,64 @@
     } catch (_) { /* privileged/odd pages */ }
   }
 
+  // Password managers (Proton Pass, 1Password, LastPass, Bitwarden...) put
+  // autofill icons and dropdowns over the page's fields. Claude kept clicking
+  // them by accident, so once Claude touches a page they are hidden there: they
+  // stay out of screenshots and can't take a click. Other tabs are untouched.
+  const OWN_ORIGIN = (() => { try { return browser.runtime.getURL(""); } catch (_) { return "\0"; } })();
+  const FOREIGN_SEL = "[data-protonpass-role], [data-lastpass-root], [data-lastpass-icon-root], " +
+    "com-1password-button, com-1password-menu, com-1password-notification";
+  const FOREIGN_TAG = /^(protonpass-|com-1password-)/i;
+  const HIDE = "display: none !important; visibility: hidden !important; pointer-events: none !important;";
+  function isForeignUi(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (FOREIGN_TAG.test(el.localName) || el.matches(FOREIGN_SEL)) return true;
+    if (el.localName === "iframe") {
+      const src = el.getAttribute("src") || "";
+      return /^(moz|chrome)-extension:/i.test(src) && !src.startsWith(OWN_ORIGIN);
+    }
+    return false;
+  }
+  function hideForeign(el) {
+    if (el.__agentBridgeHidden) return;
+    el.__agentBridgeHidden = true;
+    // A !important rule inside a shadow tree beats the page's, so the hiding
+    // rule also goes into the element's own shadow root (with extra
+    // specificity), not only into the page.
+    const sr = el.openOrClosedShadowRoot || el.shadowRoot;
+    if (sr) {
+      const st = docOf(el).createElement("style");
+      st.textContent = `:host(:not(#agent-bridge-x)), :host(:not(#agent-bridge-x)) * { ${HIDE} }`;
+      sr.appendChild(st);
+    }
+    // The managers revert attribute changes on their own elements; that only
+    // undoes this extra layer, the stylesheets keep hiding them.
+    try { el.style.setProperty("display", "none", "important"); el.style.setProperty("pointer-events", "none", "important"); } catch (_) { /* fine */ }
+  }
+  function sweepForeign(root) {
+    if (isForeignUi(root)) { hideForeign(root); return; }
+    if (!root.querySelectorAll) return;
+    for (const el of root.querySelectorAll(`${FOREIGN_SEL}, iframe`)) if (isForeignUi(el)) hideForeign(el);
+  }
+  let foreignGuard = false;
+  function guardForeignUi() {
+    if (foreignGuard) return;
+    foreignGuard = true;
+    const st = document.createElement("style");
+    st.textContent = `${FOREIGN_SEL} { ${HIDE} }`;
+    (document.head || document.documentElement).appendChild(st);
+    sweepForeign(document.documentElement);
+    new MutationObserver((recs) => {
+      for (const r of recs) for (const n of r.addedNodes) if (n.nodeType === 1) sweepForeign(n);
+      if (!st.isConnected) (document.head || document.documentElement).appendChild(st);
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+
   window.__agentBridge = {
     call(method, args) {
       tracked = true;
       hookDialogs();
+      try { guardForeignUi(); } catch (_) { /* never break the page */ }
       // Timers are suspended while a dialog is up, so fail fast instead of
       // waiting for the background's page timeout.
       if (openDialog) return Promise.resolve({ ok: false, error: dialogText(openDialog) });

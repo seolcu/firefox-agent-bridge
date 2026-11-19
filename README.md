@@ -135,6 +135,10 @@ descriptions and all code are written for this project.
   credential-like URL values show as `REDACTED`.
 - Clicking a `<select>` reports its options and current value, because the
   native popup never shows up in screenshots; pick one with `form_input`.
+- Password-manager autofill icons and dropdowns (Proton Pass, 1Password,
+  LastPass, and other extensions' in-page frames) are hidden on pages Claude
+  has used, so they stay out of screenshots and can't catch a stray click.
+  Your other tabs keep them.
 - `zoom` has Firefox re-render the region at up to 4x, so small text stays sharp.
 - With two Firefox instances running, the last one started serves the bridge;
   the other takes over again within ~2 s when it exits.
