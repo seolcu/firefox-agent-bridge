@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Firefox Agent Bridge",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Lets Claude Code drive tabs in the 'Agent' tab group through a local native-messaging host.",
   "browser_specific_settings": {
     "gecko": {

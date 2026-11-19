@@ -13,6 +13,20 @@ let retryMs = 2000;
 const agentTabIds = new Set();
 const netBuf = new Map(); // tabId -> [{...}]
 const tabHost = new Map(); // tabId -> host of the current top-level document
+const consoleHistory = new Map(); // tabId -> console messages of earlier pages on the same host
+const MAX_CONSOLE_HISTORY = 1000;
+const hostOf = (u) => { try { return new URL(u).hostname; } catch (_) { return ""; } };
+
+browser.runtime.onMessage.addListener((m, sender) => {
+  const tabId = sender.tab && sender.tab.id;
+  if (!m || tabId === undefined) return undefined;
+  if (m.type === "agent-bridge:tracked") return Promise.resolve(agentTabIds.has(tabId));
+  if (m.type === "agent-bridge:console" && agentTabIds.has(tabId) && Array.isArray(m.msgs)) {
+    const arr = (consoleHistory.get(tabId) || []).concat(m.msgs);
+    consoleHistory.set(tabId, arr.slice(-MAX_CONSOLE_HISTORY));
+  }
+  return undefined;
+});
 const MAX_NET = 500;
 const staged = new Map(); // key -> {chunks, total, ts}, payloads sent in pieces by the MCP server
 
@@ -159,6 +173,7 @@ browser.tabs.onRemoved.addListener((tabId) => {
   agentTabIds.delete(tabId);
   netBuf.delete(tabId);
   tabHost.delete(tabId);
+  consoleHistory.delete(tabId);
 });
 if (browser.tabGroups.onUpdated) browser.tabGroups.onUpdated.addListener(() => refreshTabSet());
 if (browser.tabGroups.onRemoved) browser.tabGroups.onRemoved.addListener(() => refreshTabSet());
@@ -187,7 +202,10 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
   if (d.type !== "main_frame") return;
   let host = "";
   try { host = new URL(d.url).hostname; } catch (_) { /* odd URL */ }
-  if (tabHost.has(d.tabId) && tabHost.get(d.tabId) !== host) netBuf.delete(d.tabId);
+  if (tabHost.has(d.tabId) && tabHost.get(d.tabId) !== host) {
+    netBuf.delete(d.tabId);
+    consoleHistory.delete(d.tabId);
+  }
   tabHost.set(d.tabId, host);
 }, { urls: ["<all_urls>"] });
 browser.webRequest.onCompleted.addListener((d) => recordNet(d, {}), { urls: ["<all_urls>"] });
@@ -337,14 +355,14 @@ async function screenshot(tab, { region, scale } = {}) {
   let dataUrl = await browser.tabs.captureTab(tab.id, { format: "jpeg", quality: 80, scale: 1 });
   let note = vp ? `Viewport ${vp.w}x${vp.h} CSS px (screenshot pixels = CSS px; use these coordinates for clicks). Scroll (${Math.round(vp.sx)},${Math.round(vp.sy)}). ${vp.url}` : "";
   if (region) {
+    // Firefox re-renders the region at the requested scale, so a zoom is
+    // genuinely sharper than the screenshot, not an upscaled crop.
     const [x0, y0, x1, y1] = region;
-    const img = await toBitmap(dataUrl);
     const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
-    const z = Math.min(4, Math.max(1, 1200 / Math.max(w, h)));
-    const c = canvas(w * z, h * z);
-    c.getContext("2d").drawImage(img, x0, y0, w, h, 0, 0, c.width, c.height);
-    dataUrl = c.toDataURL("image/jpeg", 0.9);
-    note = `Zoomed region [${x0},${y0},${x1},${y1}] at ${z.toFixed(2)}x. Coordinates for clicks are still full-viewport CSS px.`;
+    const z = Math.min(4, Math.max(1, 1200 / Math.max(w, h), (vp && vp.dpr) || 1));
+    const sx = vp ? vp.sx : 0, sy = vp ? vp.sy : 0;
+    dataUrl = await browser.tabs.captureTab(tab.id, { format: "jpeg", quality: 90, rect: { x: x0 + sx, y: y0 + sy, width: w, height: h }, scale: z });
+    note = `Zoomed region [${x0},${y0},${x1},${y1}] rendered at ${z.toFixed(2)}x. Coordinates for clicks are still full-viewport CSS px.`;
   }
   const image = { type: "image", data: b64(dataUrl), mimeType: "image/jpeg" };
   const s = Number(scale);
@@ -627,7 +645,23 @@ const TOOLS = {
 
   async read_console_messages({ tabId, pattern, onlyErrors, clear, limit }) {
     await requireTab(tabId);
-    return callPage(tabId, "readConsole", { pattern, onlyErrors, clear, limit });
+    // Earlier pages of the same domain (kept across navigation) + this page.
+    const tab = await browser.tabs.get(tabId);
+    const host = hostOf(tab.url);
+    const cur = await callPage(tabId, "readConsole", { raw: true, clear });
+    const prev = (consoleHistory.get(tabId) || []).filter((m) => hostOf(m.url) === host);
+    if (clear) consoleHistory.delete(tabId);
+    let re = null;
+    if (pattern) {
+      try { re = new RegExp(pattern, "i"); } catch (e) { throw new Error(`Bad pattern: ${e.message}`); }
+    }
+    let items = prev.concat(cur).filter((m) => (!onlyErrors || m.level === "error" || m.level === "exception") && (!re || re.test(m.text)));
+    const total = items.length;
+    items = items.slice(-(limit || 100));
+    if (!items.length) return `No console messages${pattern ? ` matching /${pattern}/` : ""} for ${host || tab.url} (kept across pages of this domain).`;
+    return `${total} message(s)${total > items.length ? `, showing last ${items.length}` : ""}:\n` +
+      items.map((m) => `[${new Date(m.ts).toISOString().slice(11, 23)}] ${m.level.toUpperCase()}: ${m.text}` +
+        (m.url !== tab.url ? ` (on ${m.url.replace(/^https?:\/\/[^/]+/, "") || "/"})` : "")).join("\n");
   },
 
   async read_network_requests({ tabId, urlPattern, clear, limit = 100 }) {
@@ -722,6 +756,11 @@ const TOOLS = {
     await requireTab(tabId);
     const r = await callPageEx(tabId, "pointOf", { ref });
     return JSON.stringify(await toTop(tabId, r.frameId, r.value));
+  },
+
+  async _viewport({ tabId }) {
+    await requireTab(tabId);
+    return JSON.stringify(await callPage(tabId, "viewport", {}));
   },
 
   async _label_at({ tabId, coordinate }) {

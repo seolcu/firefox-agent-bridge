@@ -130,16 +130,20 @@ descriptions and all code are written for this project.
 - Screenshots get a `Screenshot ID` for `upload_image` (kept 5 minutes).
   `save_to_disk` writes to `~/.cache/firefox-agent-bridge/screenshots/` (pruned
   after 7 days).
-- `read_network_requests` starts over on a change of domain, and
+- `read_network_requests` and `read_console_messages` keep history across
+  pages of the same domain and start over on a change of domain;
   credential-like URL values show as `REDACTED`.
+- Clicking a `<select>` reports its options and current value, because the
+  native popup never shows up in screenshots; pick one with `form_input`.
+- `zoom` has Firefox re-render the region at up to 4x, so small text stays sharp.
 - With two Firefox instances running, the last one started serves the bridge;
   the other takes over again within ~2 s when it exits.
 
 ## Differences from Claude in Chrome
 
-- `read_page` builds its tree from the DOM, not from the browser's
-  accessibility tree.
-- Native `<select>` popups can't be opened; `form_input` sets them.
+- `read_page` computes roles, names and states from the DOM (ARIA and
+  HTML-AAM rules for the common cases), not from the browser's
+  accessibility engine, so unusual markup can come out slightly different.
 - One browser per machine: `list_connected_browsers`, `select_browser` and
   `switch_browser` report the local Firefox.
 - No side-panel chat.

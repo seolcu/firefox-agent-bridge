@@ -88,6 +88,8 @@ call("computer", tabId=tab, action="left_click", ref=ref("Query"))
 call("computer", tabId=tab, action="type", text="hello world")
 call("computer", tabId=tab, action="key", text="ctrl+a Backspace")
 call("computer", tabId=tab, action="type", text="bridge")
+_, out = call("computer", tabId=tab, action="left_click", ref=ref("combobox"))
+assert "options:" in out and '"Banana"' in out, out  # native popup can't be screenshotted: choices are reported
 call("form_input", tabId=tab, ref=ref("combobox"), value="Banana")
 call("form_input", tabId=tab, ref=ref("checkbox"), value=True)
 call("computer", tabId=tab, action="left_click", ref=ref('button "Go"'))
@@ -108,6 +110,8 @@ call("computer", tabId=tab, action="type", text="X")
 call("computer", tabId=tab, action="key", text="End shift+Left shift+Left Backspace")
 call("javascript_tool", tabId=tab, action="javascript_exec", text="q.value")
 call("read_console_messages", tabId=tab)
+r, out = call("computer", tabId=tab, action="zoom", region=[0, 0, 200, 100])
+assert not r.get("isError") and "rendered at" in out, out
 r, _ = call("computer", tabId=tab, action="screenshot")
 img = next(c for c in r["content"] if c["type"] == "image")
 open(os.path.join(os.environ.get("SHOT_DIR", "/tmp"), "bridge-shot.jpg"), "wb").write(base64.b64decode(img["data"]))
@@ -243,11 +247,30 @@ if os.environ.get("SMOKE_MODEL_FIND"):
     assert out.startswith("- ") and "cross input" in out.splitlines()[0], out
 
 # real input must not mark the browser as automated
+# accessible roles and names
+open(os.path.join(_d, "a11y.html"), "w").write(
+    '<title>a11y</title><fieldset><legend>Shipping</legend><input id=zip required aria-describedby=h><span id=h>5 digits</span></fieldset>'
+    '<table><caption>Prices</caption><tr><th>Item</th></tr></table><img src=x alt=""><button aria-pressed=true>Bold</button>'
+    '<section aria-label="Results"><h2>Found</h2></section><div hidden><button>Ghost</button></div>'
+    '<script>console.log("a11y page log")</script>')
+call("navigate", tabId=tab, url=f"http://127.0.0.1:{port}/a11y.html")
+_, tree = call("read_page", tabId=tab)
+for want in ('group "Shipping"', 'required', 'description="5 digits"', 'table "Prices"', 'pressed=true', 'region "Results"'):
+    assert want in tree, (want, tree)
+assert "Ghost" not in tree and "img" not in tree, tree
+
+# console history survives same-domain navigation, resets on another domain
+call("navigate", tabId=tab, url=f"http://127.0.0.1:{port}/index.html")
+_, out = call("read_console_messages", tabId=tab, pattern="a11y page log|page warn")
+assert "a11y page log" in out and "page warn" in out, out
+
 _, wd = call("javascript_tool", tabId=tab, action="javascript_exec", text="String(navigator.webdriver)")
 assert wd == "false", wd
 
 # navigate without tabId uses the group's first tab and appends the tab list
 _, out = call("navigate", url="https://example.org")
+_, c = call("read_console_messages", tabId=tab, pattern="a11y page log")
+assert "No console messages" in c, c
 assert "Tabs in the" in out
 r, out = call("tabs_create_mcp")
 new_tab = int(out.split("Created tab ")[1].split()[0])

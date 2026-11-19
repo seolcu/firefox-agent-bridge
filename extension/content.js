@@ -49,6 +49,20 @@
   window.addEventListener("error", (e) => {
     record("exception", [`${e.message} (${e.filename}:${e.lineno}:${e.colno})`]);
   }, true);
+  // Console history survives navigation within a domain, like Chrome's: a
+  // page in the agent's tab group hands its buffer to the background script
+  // when it goes away. Other tabs never send anything.
+  let tracked = false;
+  try {
+    browser.runtime.sendMessage({ type: "agent-bridge:tracked" }).then((v) => { tracked = tracked || !!v; }, () => {});
+  } catch (_) { /* privileged page */ }
+  window.addEventListener("pagehide", () => {
+    if (!tracked || !consoleBuf.length) return;
+    try {
+      browser.runtime.sendMessage({ type: "agent-bridge:console", msgs: consoleBuf.slice(-500) }).catch(() => {});
+    } catch (_) { /* extension gone */ }
+  });
+
   window.addEventListener("unhandledrejection", (e) => {
     record("exception", ["Unhandled rejection:", e.reason]);
   });
@@ -117,62 +131,113 @@
     return [r.left + fe.clientLeft + parseFloat(st.paddingLeft), r.top + fe.clientTop + parseFloat(st.paddingTop)];
   }
 
+  // Implicit roles, following HTML-AAM where it matters for agents.
   const TAG_ROLES = {
-    BUTTON: "button", SELECT: "combobox", TEXTAREA: "textbox", IMG: "img",
+    BUTTON: "button", TEXTAREA: "textbox", IMG: "img",
     H1: "heading", H2: "heading", H3: "heading", H4: "heading", H5: "heading", H6: "heading",
-    NAV: "navigation", MAIN: "main", HEADER: "banner", FOOTER: "contentinfo",
-    ASIDE: "complementary", FORM: "form", TABLE: "table", TR: "row", TD: "cell",
-    TH: "columnheader", UL: "list", OL: "list", LI: "listitem", DIALOG: "dialog",
-    SUMMARY: "button", LABEL: "label", P: "paragraph", OPTION: "option",
-    ARTICLE: "article", IFRAME: "iframe", VIDEO: "video", AUDIO: "audio",
+    NAV: "navigation", MAIN: "main", ASIDE: "complementary", SEARCH: "search",
+    TABLE: "table", CAPTION: "caption", THEAD: "rowgroup", TBODY: "rowgroup", TFOOT: "rowgroup",
+    TR: "row", TD: "cell", UL: "list", OL: "list", MENU: "list", LI: "listitem",
+    DL: "list", DT: "term", DD: "definition", DIALOG: "dialog", SUMMARY: "button", DETAILS: "group",
+    FIELDSET: "group", LEGEND: "legend", LABEL: "label", P: "paragraph", OPTION: "option", OPTGROUP: "group",
+    ARTICLE: "article", FIGURE: "figure", FIGCAPTION: "caption", BLOCKQUOTE: "blockquote",
+    IFRAME: "iframe", VIDEO: "video", AUDIO: "audio", PROGRESS: "progressbar", METER: "meter",
+    OUTPUT: "status", HR: "separator", CODE: "code", PRE: "generic", MARK: "mark",
+    STRONG: "strong", EM: "emphasis", DEL: "deletion", INS: "insertion", TIME: "time",
   };
   const INPUT_ROLES = {
     checkbox: "checkbox", radio: "radio", button: "button", submit: "button",
     reset: "button", image: "button", file: "button", range: "slider",
-    search: "searchbox", number: "spinbutton",
+    search: "searchbox", number: "spinbutton", color: "button",
   };
   const INTERACTIVE_ROLES = new Set([
     "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox",
     "listbox", "option", "menuitem", "menuitemcheckbox", "menuitemradio", "tab",
-    "switch", "slider", "spinbutton", "treeitem",
+    "switch", "slider", "spinbutton", "treeitem", "gridcell",
   ]);
-  const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "META", "LINK"]);
+  const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "META", "LINK", "TITLE"]);
+  // Roles whose accessible name comes from their content.
+  const NAME_FROM_CONTENT = new Set([
+    "button", "link", "heading", "option", "tab", "menuitem", "menuitemcheckbox", "menuitemradio",
+    "treeitem", "cell", "gridcell", "columnheader", "rowheader", "label", "legend", "caption",
+    "checkbox", "radio", "switch", "tooltip", "term", "row",
+  ]);
+
+  function landmarkName(el) {
+    return el.hasAttribute("aria-label") || el.hasAttribute("aria-labelledby") || el.hasAttribute("title");
+  }
 
   function role(el) {
     const r = el.getAttribute("role");
-    if (r) return r.split(/\s+/)[0];
+    if (r) {
+      const first = r.trim().split(/\s+/)[0];
+      return first === "presentation" ? "none" : first;
+    }
     const t = el.tagName;
-    if (t === "A") return el.hasAttribute("href") ? "link" : "generic";
+    if (t === "A" || t === "AREA") return el.hasAttribute("href") ? "link" : "generic";
     if (t === "INPUT") {
       const ty = (el.getAttribute("type") || "text").toLowerCase();
       if (ty === "hidden") return "none";
+      if (["text", "email", "tel", "url", ""].includes(ty) && el.getAttribute("list")) return "combobox";
       return INPUT_ROLES[ty] || "textbox";
     }
-    if (t === "SELECT" && el.multiple) return "listbox";
-    if (t === "svg" || t === "SVG") return el.getAttribute("aria-label") ? "img" : "none";
+    if (t === "SELECT") return el.multiple || el.size > 1 ? "listbox" : "combobox";
+    if (t === "IMG") return el.getAttribute("alt") === "" && !el.hasAttribute("title") ? "none" : "img";
+    if (t === "svg" || t === "SVG") return el.getAttribute("aria-label") || el.querySelector(":scope > title") ? "img" : "none";
+    if (t === "TH") return el.getAttribute("scope") === "row" ? "rowheader" : "columnheader";
+    // Sections are landmarks only when named or not nested in sectioning content.
+    if (t === "SECTION") return landmarkName(el) ? "region" : "generic";
+    if (t === "FORM") return landmarkName(el) ? "form" : "generic";
+    if (t === "HEADER" || t === "FOOTER") {
+      if (el.closest("article, aside, main, nav, section") && !el.matches("article, aside, main, nav, section")) return "generic";
+      return t === "HEADER" ? "banner" : "contentinfo";
+    }
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return "textbox";
     return TAG_ROLES[t] || "generic";
   }
 
+  function idrefText(el, attr) {
+    const ids = (el.getAttribute(attr) || "").trim().split(/\s+/).filter(Boolean);
+    return clean(ids.map((id) => {
+      const ref = docOf(el).getElementById(id);
+      return ref ? (ref.getAttribute("aria-label") || ref.textContent || "") : "";
+    }).join(" "));
+  }
+
+  // Accessible name, close to the accname algorithm for the common cases.
   function accName(el) {
+    const lb = idrefText(el, "aria-labelledby");
+    if (lb) return lb;
     const al = el.getAttribute("aria-label");
-    if (al) return clean(al);
-    const lb = el.getAttribute("aria-labelledby");
-    if (lb) {
-      const s = clean(lb.split(/\s+/).map((id) => docOf(el).getElementById(id)?.textContent || "").join(" "));
-      if (s) return s;
-    }
+    if (al && clean(al)) return clean(al);
     const t = el.tagName;
-    if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT") {
-      if (el.id) {
-        const l = docOf(el).querySelector(`label[for="${CSS.escape(el.id)}"]`);
-        if (l) return clean(l.textContent);
+    if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT" || t === "METER" || t === "PROGRESS" || t === "OUTPUT") {
+      const labels = el.labels ? Array.from(el.labels) : [];
+      const fromLabels = clean(labels.map((l) => l.innerText || l.textContent || "").join(" "));
+      if (fromLabels) return fromLabels;
+      if (t === "INPUT") {
+        const ty = (el.getAttribute("type") || "text").toLowerCase();
+        if (["submit", "button", "reset"].includes(ty)) return clean(el.value) || (ty === "submit" ? "Submit" : ty === "reset" ? "Reset" : "");
+        if (ty === "image") return clean(el.alt || el.value || "Submit");
       }
-      const pl = el.closest("label");
-      if (pl) return clean(pl.textContent);
+      if (el.title) return clean(el.title);
       if (el.placeholder) return clean(el.placeholder);
-      if (t === "INPUT" && ["submit", "button", "reset"].includes(el.type)) return clean(el.value);
+      return "";
     }
-    if (t === "IMG") return clean(el.alt);
+    if (t === "IMG" || t === "AREA") return clean(el.getAttribute("alt") || el.title || "");
+    if (t === "svg" || t === "SVG") return clean(el.querySelector(":scope > title")?.textContent || "");
+    if (t === "FIELDSET") {
+      const lg = el.querySelector(":scope > legend");
+      if (lg) return clean(lg.textContent);
+    }
+    if (t === "TABLE") {
+      const cap = el.querySelector(":scope > caption");
+      if (cap) return clean(cap.textContent);
+    }
+    if (t === "FIGURE") {
+      const fc = el.querySelector(":scope > figcaption");
+      if (fc) return clean(fc.textContent);
+    }
     if (el.title) return clean(el.title);
     return "";
   }
@@ -182,6 +247,7 @@
   }
 
   function isHidden(el, st) {
+    if (el.hidden || el.inert) return true;
     if (st.display === "none" || st.visibility === "hidden" || st.visibility === "collapse") return true;
     if (st.display === "contents") return false;
     const r = el.getBoundingClientRect();
@@ -208,7 +274,7 @@
   }
 
   function describe(el, r) {
-    const name = accName(el) || (["link", "button", "heading", "option", "tab", "menuitem", "listitem", "cell", "columnheader", "label"].includes(r) ? textName(el) : "");
+    const name = accName(el) || (NAME_FROM_CONTENT.has(r) || r === "listitem" ? textName(el) : "");
     let line = r;
     if (name) line += ` "${clip(name)}"`;
     else {
@@ -217,7 +283,8 @@
     }
     line += ` [${refOf(el)}]`;
     const t = el.tagName;
-    if (r === "heading" && /^H[1-6]$/.test(t)) line += ` level=${t[1]}`;
+    const lvl = el.getAttribute("aria-level") || (r === "heading" && /^H[1-6]$/.test(t) ? t[1] : "");
+    if (lvl) line += ` level=${lvl}`;
     if (t === "IFRAME" || t === "FRAME") {
       const fd = frameDoc(el);
       const xid = xframeId(el);
@@ -235,13 +302,26 @@
     if (t === "SELECT") {
       const o = el.selectedOptions && el.selectedOptions[0];
       if (o) line += ` value="${clip(clean(o.textContent), 80)}"`;
+      line += ` options=${el.options.length}`;
     }
+    if ((t === "PROGRESS" || t === "METER") && el.value !== undefined) line += ` value=${el.value}/${el.max}`;
+    const vnow = el.getAttribute("aria-valuenow");
+    if (vnow !== null) line += ` value=${el.getAttribute("aria-valuetext") || vnow}`;
     if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) line += " editable";
     if (el.disabled || el.getAttribute("aria-disabled") === "true") line += " disabled";
+    if (el.required || el.getAttribute("aria-required") === "true") line += " required";
+    if (el.readOnly || el.getAttribute("aria-readonly") === "true") line += " readonly";
+    if (el.getAttribute("aria-invalid") === "true" || (el.matches && el.matches(":user-invalid"))) line += " invalid";
     const exp = el.getAttribute("aria-expanded");
     if (exp) line += ` expanded=${exp}`;
-    const sel = el.getAttribute("aria-selected") || el.getAttribute("aria-checked");
-    if (sel === "true") line += " selected";
+    const pressed = el.getAttribute("aria-pressed");
+    if (pressed) line += ` pressed=${pressed}`;
+    const checked = el.getAttribute("aria-checked");
+    if (checked) line += checked === "mixed" ? " mixed" : checked === "true" ? " checked" : "";
+    if (el.getAttribute("aria-selected") === "true") line += " selected";
+    if (el.getAttribute("aria-current") && el.getAttribute("aria-current") !== "false") line += ` current=${el.getAttribute("aria-current")}`;
+    const desc = idrefText(el, "aria-describedby");
+    if (desc) line += ` description="${clip(desc, 120)}"`;
     return line;
   }
 
@@ -508,6 +588,16 @@
     return false;
   }
 
+  // A native <select> popup is drawn outside the page (screenshots miss it),
+  // so a click on one reports the choices instead.
+  function selectSummary(el) {
+    const opts = Array.from(el.options);
+    const shown = opts.slice(0, 40).map((o) => JSON.stringify(clip(clean(o.textContent), 60)) + (o.disabled ? " (disabled)" : ""));
+    const cur = el.selectedOptions && el.selectedOptions[0];
+    return `options: ${shown.join(" | ")}${opts.length > 40 ? ` | … (${opts.length} in all)` : ""}; ` +
+      `current ${cur ? JSON.stringify(clean(cur.textContent)) : "none"}. Pick one with form_input (option text or value).`;
+  }
+
   function label(el) {
     const r = role(el);
     const n = accName(el) || clip(textName(el), 60);
@@ -538,7 +628,7 @@
     }
     if (clicks === 3 && el.select) try { el.select(); } catch (_) { /* not selectable */ }
     let note = "";
-    if (el.tagName === "SELECT") note = " (native <select> dropdowns can't be opened synthetically; use form_input)";
+    if (el.tagName === "SELECT") note = `\n${selectSummary(el)}`;
     if (el.tagName === "IFRAME") note = " (target is an iframe; clicks inside cross-origin frames are not supported)";
     const top = topPoint(el, x, y);
     return { text: `${button} click x${clicks} on ${label(el)} at (${Math.round(top[0])}, ${Math.round(top[1])})${note}`, at: top };
@@ -788,7 +878,12 @@
     throw new Error(`${label(el)} is not a form field.`);
   }
 
-  function readConsole({ pattern, onlyErrors = false, clear = false, limit = 100 } = {}) {
+  function readConsole({ pattern, onlyErrors = false, clear = false, limit = 100, raw = false } = {}) {
+    if (raw) {
+      const all = consoleBuf.slice();
+      if (clear) consoleBuf.length = 0;
+      return all;
+    }
     let re = null;
     if (pattern) re = new RegExp(pattern, "i");
     let items = consoleBuf.filter((m) => (!onlyErrors || m.level === "error" || m.level === "exception") && (!re || re.test(m.text)));
@@ -905,7 +1000,9 @@
 
   // Helpers for trusted mode (real input sent over WebDriver BiDi).
   function labelAt({ coordinate }) {
-    return label(resolveTarget({ coordinate }).el);
+    const el = resolveTarget({ coordinate }).el;
+    const select = el.tagName === "SELECT" ? el : el.tagName === "OPTION" ? el.closest("select") : null;
+    return select ? `${label(select)}\n${selectSummary(select)}` : label(el);
   }
 
   function focusedLabel() {
@@ -979,6 +1076,7 @@
 
   window.__agentBridge = {
     call(method, args) {
+      tracked = true;
       hookDialogs();
       // Timers are suspended while a dialog is up, so fail fast instead of
       // waiting for the background's page timeout.

@@ -31,7 +31,7 @@ BIDI_START_WAIT_S = 5
 MARKER_IDLE_S = 120  # must match IDLE_MS in autoconfig/firefox-agent-bridge.cfg
 SHOT_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "firefox-agent-bridge", "screenshots")
 TIMEOUT_S = 90
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 
 # Native messaging caps host->extension messages at 1 MB, so file payloads go
 # over in chunks that the extension reassembles.
@@ -519,6 +519,9 @@ class Server:
         raise RuntimeError("Could not find the frame's BiDi context.")
 
     def target_point(self, args):
+        if args.get("action") == "scroll" and not args.get("coordinate") and not args.get("ref"):
+            vp = json.loads(self.ext_text("_viewport", {"tabId": args.get("tabId")}))
+            return [vp["w"] / 2, vp["h"] / 2]
         if args.get("coordinate"):
             return [float(v) for v in args["coordinate"]]
         if args.get("ref"):
@@ -551,9 +554,11 @@ class Server:
             mv = lambda x, y, **kw: {"type": "pointerMove", "x": int(round(x)), "y": int(round(y)), "origin": "viewport", **kw}
             sources, what = [], ""
             act_ctx = ctx
+            extra = ""  # e.g. the choices of a <select>, reported after the summary
             if a in ("left_click", "right_click", "double_click", "triple_click", "hover"):
                 tx, ty = self.target_point(args)
                 act_ctx, (x, y), what = self.locate(b, ctx, tab, [tx, ty])
+                what, _, extra = what.partition("\n")
                 if a == "hover":
                     sources = [mouse([mv(x, y)])]
                     summary = f"Hovered {what} at ({round(tx)}, {round(ty)})"
@@ -615,9 +620,15 @@ class Server:
             else:
                 b.cmd("input.releaseActions", {"context": act_ctx})
                 prompt = b.wait_event("browsingContext.userPromptOpened", 0.3)
+                if extra and a != "hover":
+                    # A real click opened the native <select> popup, which
+                    # screenshots can't show; close it and report the choices.
+                    b.cmd("input.performActions", {"context": act_ctx, "actions": [{"type": "key", "id": "kbd", "actions": [
+                        {"type": "keyDown", "value": "\ue00c"}, {"type": "keyUp", "value": "\ue00c"}]}]})
+                    b.cmd("input.releaseActions", {"context": act_ctx})
         finally:
             b.close()
-        summary += " [trusted input]"
+        summary += " [trusted input]" + (f"\n{extra}" if extra else "")
         if prompt:
             p = prompt.get("params", {})
             return [{"type": "text", "text": (
@@ -651,7 +662,6 @@ class Server:
             if name == "find":
                 return self.find(args)
             if (name == "computer" and args.get("action") in TRUSTED_ACTIONS
-                    and not (args.get("action") == "scroll" and not args.get("coordinate"))
                     and os.environ.get("AGENT_BRIDGE_TRUSTED") != "off"):
                 ep = self.bidi_endpoint()
                 if ep:
