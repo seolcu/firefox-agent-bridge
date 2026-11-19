@@ -46,6 +46,10 @@ No third-party dependencies: Python stdlib and plain JS only.
   turns the connection prompt and banners off through `defaultPref` (never
   `pref`, so nothing lands in prefs.js). Keep it that way: don't open the port
   permanently, and don't write user prefs.
+- While BiDi is open, Firefox shows its remote-control cue (striped address bar,
+  robot icon) in every window. The idle window is kept short (2 min,
+  `IDLE_MS` in the cfg = `MARKER_IDLE_S` in `mcp_server.py`) for that reason.
+  Don't hide the cue: it is the user's only sign that the port is open.
 - RemoteAgent **force-quits Firefox** if it cannot bind its port. The cfg checks
   that 9222 is free first; keep that check in any change.
 - The autoconfig scope only has `Services`. Get `ChromeUtils`/`IOUtils`/`PathUtils`

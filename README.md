@@ -28,7 +28,10 @@ machine you trust and understand what it does:
   Code session is using the bridge, **with Firefox's connection prompt
   disabled**. While it is open, any program on this computer, sandboxed apps
   with network access included, can control the browser. It closes when Claude
-  Code exits or after 10 idle minutes.
+  Code exits or after 2 minutes without browser tool calls.
+- **Firefox marks it.** While the server is open, Firefox shows its
+  remote-control cue in every window: a striped address bar with a robot
+  icon. This is expected; it goes away with the server.
 - **The autoconfig is system-wide.** It goes into the Firefox install
   directory and applies to every Firefox profile on the machine, and it runs
   privileged code at Firefox startup.
