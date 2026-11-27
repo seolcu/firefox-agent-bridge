@@ -817,7 +817,8 @@ const TOOLS = {
       deviceId = "firefox-" + crypto.randomUUID().slice(0, 8);
       await browser.storage.local.set({ deviceId });
     }
-    return JSON.stringify({ deviceId, name: `${info.name} ${info.version}`, platform: plat.os, connected: !!port });
+    return JSON.stringify({ deviceId, name: `${info.name} ${info.version}`, platform: plat.os, connected: !!port,
+      extensionVersion: browser.runtime.getManifest().version });
   },
 };
 

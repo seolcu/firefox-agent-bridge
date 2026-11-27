@@ -75,6 +75,9 @@ cd firefox-agent-bridge
 - the MCP server `firefox` in Claude Code's user config
 
 Update with `git pull && ./install.sh`, then restart Firefox and Claude Code.
+If the extension and the MCP server end up on different versions (say, after a
+`git pull` without `./install.sh`), the first tool result after Firefox connects
+carries a note saying which one to update.
 
 ## How it works
 

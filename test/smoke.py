@@ -46,6 +46,7 @@ for _ in range(20):
     if not r.get("isError"):
         break
     time.sleep(1)
+assert "versions differ" not in out, out
 tab = json.loads(out.split("\n", 1)[1])[0]["tabId"]
 
 TEST_HTML = """

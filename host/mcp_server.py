@@ -31,7 +31,8 @@ BIDI_START_WAIT_S = 5
 MARKER_IDLE_S = 120  # must match IDLE_MS in autoconfig/firefox-agent-bridge.cfg
 SHOT_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "firefox-agent-bridge", "screenshots")
 TIMEOUT_S = 90
-VERSION = "0.7.2"
+VERSION = "0.7.3"
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Native messaging caps host->extension messages at 1 MB, so file payloads go
 # over in chunks that the extension reassembles.
@@ -242,12 +243,14 @@ class Bridge:
         self.sock = None
         self.buf = b""
         self.seq = 0
+        self.conn = 0  # bumps on every new socket, so a reconnected Firefox gets its version re-checked
 
     def _connect(self):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(TIMEOUT_S)
         s.connect(SOCK_PATH)
         self.sock, self.buf = s, b""
+        self.conn += 1
 
     def call(self, tool_name, args):
         for attempt in (1, 2):
@@ -292,6 +295,31 @@ class Server:
         self.shots = {}  # id -> (ts, mime, b64 at full size)
         self.marker = os.path.join(ACTIVE_DIR, str(os.getpid()))
         self.marker_born = 0.0
+        self.checked_conn = 0
+
+    def version_note(self):
+        """Once per Firefox connection: a note when the extension and this server are different versions."""
+        if self.bridge.sock is None or self.checked_conn == self.bridge.conn:
+            return None
+        content, err = self.ext("_browser_info", {})
+        if err:
+            return None
+        self.checked_conn = self.bridge.conn
+        try:
+            ext_v = json.loads(content[0]["text"]).get("extensionVersion")
+        except (ValueError, KeyError, IndexError, AttributeError):
+            return None
+        if ext_v == VERSION:
+            return None
+        def key(v):
+            return tuple(int(x) for x in re.findall(r"\d+", v or "0"))
+        if ext_v and key(ext_v) > key(VERSION):
+            fix = "This Claude Code session started an older MCP server: ask the user to start a new Claude Code session."
+        else:
+            fix = (f"The installed extension is out of date: ask the user to run ./install.sh in {REPO_DIR} "
+                   "and restart Firefox.")
+        return (f"Note: Firefox Agent Bridge versions differ (Firefox extension {ext_v or 'older than 0.7.3'}, "
+                f"MCP server {VERSION}). Tools may misbehave. {fix}")
 
     def mark_active(self):
         try:
@@ -643,6 +671,7 @@ class Server:
         if err:
             return content, True
         info = json.loads(content[0]["text"])
+        info.pop("extensionVersion", None)
         if name == "select_browser":
             if args.get("deviceId") != info["deviceId"]:
                 return [{"type": "text", "text": f"No connected browser has deviceId {args.get('deviceId')!r}."}], True
@@ -743,6 +772,9 @@ def serve(server):
                 continue
             server.mark_active()
             content, err = server.dispatch(name, p.get("arguments") or {})
+            note = server.version_note()
+            if note:
+                content = list(content) + [{"type": "text", "text": note}]
             result = {"content": content}
             if err:
                 result["isError"] = True
